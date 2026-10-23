@@ -628,7 +628,7 @@ async function loadSoybeanFromSupabase(){
     return;
   }
   try{
-    const endpoint=SUPABASE_URL.replace(/\/$/,"")+"/rest/v1/precos_commodities?select=data_referencia,preco,fonte,url_fonte,commodity&commodity=eq.SOJA&order=data_referencia.asc";
+  const endpoint=SUPABASE_URL.replace(/\/$/,"").replace(/\/rest\/v1$/,"")+"/rest/v1/precos_commodities?select=data_referencia,preco,fonte,url_fonte,commodity&commodity=eq.SOJA&order=data_referencia.asc";
     const response=await fetch(endpoint,{headers:{apikey:SUPABASE_PUBLISHABLE_KEY,Authorization:"Bearer "+SUPABASE_PUBLISHABLE_KEY}});
     if(!response.ok) throw new Error("Supabase respondeu HTTP "+response.status);
     const records=await response.json();
