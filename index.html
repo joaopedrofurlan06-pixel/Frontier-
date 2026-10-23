@@ -524,10 +524,10 @@ main{min-width:0;padding:28px clamp(18px,3vw,46px) 56px;max-width:1600px;width:1
 <div class="toast" id="toast">Ação demonstrativa concluída.</div>
 <script>
 /*
- * FRONTIER V6 — dados estruturados do indicador de soja.
- * Esta série é estática e reproduz observações selecionadas já presentes no protótipo.
- * Não é uma API nem uma cotação em tempo real. Para atualizar, valide a fonte e acrescente
- * registros com data ISO, valor numérico, fonte e data de consulta.
+ * FRONTIER V7 — integração Supabase para dados de mercado.
+ * A tabela Supabase é a fonte preferencial quando houver cotações reais autorizadas.
+ * A série local abaixo é apenas a série histórica já existente no protótipo e NÃO é atualizada automaticamente.
+ * Não exiba registros de teste; a integração ignora explicitamente SOJA_TESTE e fontes de teste.
  */
 const soybeanObservations = [
   {date:"2026-08-11", value:137.46, source:"CEPEA/ESALQ-PR", sourceUrl:"https://www.noticiasagricolas.com.br/cotacoes/soja/indicador-cepea-esalq-soja-parana"},
@@ -550,6 +550,12 @@ const soybeanObservations = [
   {date:"2026-10-21", value:146.18, source:"CEPEA/ESALQ-PR", sourceUrl:"https://www.noticiasagricolas.com.br/cotacoes/soja/indicador-cepea-esalq-soja-parana"}
 ];
 
+// Preencha estes dois campos antes de publicar. Use apenas Project URL e Publishable key.
+const SUPABASE_URL = "https://uuufguqkelrvdchmikyq.supabase.co/rest/v1/";
+const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_EYu-RuZfhyDy2NbMEwFMig_kEY7ehVK";
+let activeSoybeanObservations = soybeanObservations;
+let usingLiveDatabase = false;
+
 const brl = n => n.toLocaleString("pt-BR",{style:"currency",currency:"BRL"});
 const shortDate = iso => new Date(iso+"T12:00:00").toLocaleDateString("pt-BR",{day:"2-digit",month:"short"}).replace(".","");
 const fullDate = iso => new Date(iso+"T12:00:00").toLocaleDateString("pt-BR",{day:"2-digit",month:"2-digit",year:"numeric"});
@@ -558,9 +564,11 @@ function renderSoyChart(){
   const selector=document.getElementById("soyRange");
   if(!svg||!selector)return;
   const mode=selector.value;
-  const latest=soybeanObservations[soybeanObservations.length-1];
+  const dataset=activeSoybeanObservations;
+  if(!dataset.length){svg.innerHTML=`<text x="380" y="125" text-anchor="middle" fill="#dce9de" font-size="14">Nenhuma cotação real cadastrada no banco ainda.</text>`;document.getElementById("soyPointCount").textContent="0 PONTOS";return;}
+  const latest=dataset[dataset.length-1];
   const cutoff=mode==="all"?null:new Date(latest.date+"T12:00:00").getTime()-Number(mode)*86400000;
-  const rows=soybeanObservations.filter(d=>!cutoff||new Date(d.date+"T12:00:00").getTime()>=cutoff);
+  const rows=dataset.filter(d=>!cutoff||new Date(d.date+"T12:00:00").getTime()>=cutoff);
   const width=760,height=270,left=58,right=18,top=24,bottom=38;
   const plotW=width-left-right,plotH=height-top-bottom;
   const minVal=Math.floor((Math.min(...rows.map(d=>d.value))-2)/2)*2;
@@ -588,7 +596,7 @@ function renderSoyChart(){
   out+=`<text x="${left}" y="13" fill="#dce9de" font-size="11" font-weight="700">R$/saca de 60 kg · CEPEA/ESALQ-PR</text>`;
   svg.innerHTML=out;
   document.getElementById("soyPointCount").textContent=`${rows.length} PONTOS`;
-  document.getElementById("soyChartSubtitle").textContent=`Soja no Paraná · ${shortDate(rows[0].date)} a ${shortDate(latest.date)} de 2026`;
+  document.getElementById("soyChartSubtitle").textContent=`${usingLiveDatabase?"Banco Frontier · dados cadastrados":"Série histórica do protótipo · não é atualização ao vivo"} · ${shortDate(rows[0].date)} a ${shortDate(latest.date)}`;
   document.getElementById("soyStartLabel").textContent=fullDate(rows[0].date);
   document.getElementById("soyEndLabel").textContent=fullDate(latest.date);
   document.getElementById("soyLatestValue").textContent=`${brl(latest.value)}/sc`;
@@ -603,17 +611,42 @@ function renderSoyChart(){
 }
 function downloadSoyCsv(){
   const selector=document.getElementById("soyRange");
-  const mode=selector.value,latest=soybeanObservations[soybeanObservations.length-1];
+  const mode=selector.value,dataset=activeSoybeanObservations;
+  if(!dataset.length){notify("Não há cotações para exportar.");return;}
+  const latest=dataset[dataset.length-1];
   const cutoff=mode==="all"?null:new Date(latest.date+"T12:00:00").getTime()-Number(mode)*86400000;
-  const rows=soybeanObservations.filter(d=>!cutoff||new Date(d.date+"T12:00:00").getTime()>=cutoff);
+  const rows=dataset.filter(d=>!cutoff||new Date(d.date+"T12:00:00").getTime()>=cutoff);
   const csv="data;valor_brl_saca_60kg;fonte;url_fonte\n"+rows.map(d=>`${d.date};${d.value.toFixed(2).replace(".",",")};${d.source};${d.sourceUrl}`).join("\n");
   const blob=new Blob(["\ufeff"+csv],{type:"text/csv;charset=utf-8;"});
   const url=URL.createObjectURL(blob),a=document.createElement("a");
   a.href=url;a.download=`frontier-soja-${mode==="all"?"periodo-completo":mode+"-dias"}.csv`;
   document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);
 }
+async function loadSoybeanFromSupabase(){
+  if(!SUPABASE_URL.startsWith("https://") || SUPABASE_URL.includes("COLE_AQUI") || SUPABASE_PUBLISHABLE_KEY.includes("COLE_AQUI")){
+    renderSoyChart();
+    return;
+  }
+  try{
+    const endpoint=SUPABASE_URL.replace(/\/$/,"")+"/rest/v1/precos_commodities?select=data_referencia,preco,fonte,url_fonte,commodity&commodity=eq.SOJA&order=data_referencia.asc";
+    const response=await fetch(endpoint,{headers:{apikey:SUPABASE_PUBLISHABLE_KEY,Authorization:"Bearer "+SUPABASE_PUBLISHABLE_KEY}});
+    if(!response.ok) throw new Error("Supabase respondeu HTTP "+response.status);
+    const records=await response.json();
+    const realRows=records.filter(r=>r.data_referencia && Number.isFinite(Number(r.preco)) && Number(r.preco)>0 && !/teste|fict[ií]cio|exemplo/i.test(String(r.fonte||"")))
+      .map(r=>({date:r.data_referencia,value:Number(r.preco),source:r.fonte||"Fonte não informada",sourceUrl:r.url_fonte||""}))
+      .sort((a,b)=>a.date.localeCompare(b.date));
+    if(realRows.length){activeSoybeanObservations=realRows;usingLiveDatabase=true;}
+    renderSoyChart();
+    if(!realRows.length) notify("Conexão ativa; ainda não há cotações reais cadastradas para SOJA.");
+    else notify("Dados carregados do banco Frontier.");
+  }catch(error){
+    console.error("Falha ao carregar dados do Supabase:",error);
+    renderSoyChart();
+    notify("Não foi possível ler o banco. Confira URL, chave e política de leitura.");
+  }
+}
 document.addEventListener("DOMContentLoaded",()=>{
-  renderSoyChart();
+  loadSoybeanFromSupabase();
   document.getElementById("soyRange")?.addEventListener("change",renderSoyChart);
   document.getElementById("downloadSoyCsv")?.addEventListener("click",downloadSoyCsv);
 });
